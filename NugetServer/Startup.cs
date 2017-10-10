@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NugetServer.Models;
+using NugetServer.Service;
 
 namespace NugetServer
 {
@@ -33,6 +34,7 @@ namespace NugetServer
 			services.AddLogging();
 			services.AddEntityFrameworkSqlite();
 			services.AddMvc();
+			services.AddScoped<PackageService>();
 		}
 
 		// This method gets called by the runtime. Use this method to configure the HTTP request pipeline.

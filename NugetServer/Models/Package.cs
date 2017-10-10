@@ -43,5 +43,10 @@ namespace NugetServer.Models
 		public string LicenseUrl { get; set; }
 		public string LicenseNames { get; set; }
 		public string LicenseReportUrl { get; set; }
+
+		public override string ToString()
+		{
+			return Identifier;
+		}
 	}
 }

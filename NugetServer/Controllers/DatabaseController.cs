@@ -2,12 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
-using System.Security.Cryptography;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Xml.Serialization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using NugetServer.Models;
+using NugetServer.Schema;
 
 namespace NugetServer.Controllers
 {
@@ -35,6 +36,7 @@ namespace NugetServer.Controllers
 			var updated = new List<Nuspec>();
 			foreach (var spec in specs)
 			{
+				db.Database.EnsureCreated();
 				var package = db.Packages.FirstOrDefault(p => p.Identifier == spec.Metadata.Id && p.Version == spec.Metadata.Version);
 				if (package == null)
 				{
@@ -127,33 +129,64 @@ namespace NugetServer.Controllers
 		{
 			var packageFileNames = GetPackageFileNames();
 			var serializer = CreateSerializer();
+			var serializer2012 = new XmlSerializer(typeof(Nuspec2012));
 			var hashAlgorithm = SHA512.Create();
 			var specs = new List<Nuspec>();
 			foreach (var packageFileName in packageFileNames)
 			{
-				long fileSize;
-				byte[] fileHashBytes;
-				using (var archiveFileStream = System.IO.File.Open(packageFileName, FileMode.Open))
+				try
 				{
-					fileSize = archiveFileStream.Length;
-					fileHashBytes = hashAlgorithm.ComputeHash(archiveFileStream);
-				}
-
-				using (var archive = ZipFile.Open(packageFileName, ZipArchiveMode.Read))
-				{
-					var targetFrameworks = string.Join(",", archive.Entries.Where(e => e.FullName.Contains("lib/")).Select(e => e.FullName.Split('/')[1]));
-					var nuspecFile = archive.Entries.First(e => e.Name.EndsWith(".nuspec", StringComparison.Ordinal));
-					using (var stream = nuspecFile.Open())
+					long fileSize;
+					byte[] fileHashBytes;
+					using (var archiveFileStream = System.IO.File.Open(packageFileName, FileMode.Open))
 					{
-						if (serializer.Deserialize(stream) is Nuspec spec)
+						fileSize = archiveFileStream.Length;
+						fileHashBytes = hashAlgorithm.ComputeHash(archiveFileStream);
+					}
+
+					using (var archive = ZipFile.Open(packageFileName, ZipArchiveMode.Read))
+					{
+						var targetFrameworks = string.Join(",", archive.Entries.Where(e => e.FullName.Contains("lib/")).Select(e => e.FullName.Split('/')[1]));
+						var nuspecFile = archive.Entries.First(e => e.Name.EndsWith(".nuspec", StringComparison.Ordinal));
+						try
 						{
-							spec.Size = fileSize;
-							spec.Hash = Convert.ToBase64String(fileHashBytes);
-							spec.TargetFrameworks = targetFrameworks;
-							specs.Add(spec);
+							using (var stream = nuspecFile.Open())
+						{
+							if (serializer.Deserialize(stream) is Nuspec spec)
+							{
+								spec.Size = fileSize;
+								spec.Hash = Convert.ToBase64String(fileHashBytes);
+								spec.TargetFrameworks = targetFrameworks;
+								specs.Add(spec);
+							}
+						}
+						}
+						catch (Exception ex)
+						{
+							using (var stream = nuspecFile.Open())
+							{
+								if (serializer2012.Deserialize(stream) is Nuspec2012 spec2012)
+								{
+									var spec = new Nuspec();
+									Mapper.Map(spec2012, spec);
+
+									spec.Size = fileSize;
+									spec.Hash = Convert.ToBase64String(fileHashBytes);
+									spec.TargetFrameworks = targetFrameworks;
+									specs.Add(spec);
+								}
+							}
+							//throw;
 						}
 					}
 				}
+				catch (Exception ex)
+				{
+					Console.WriteLine(packageFileName);
+					//Console.WriteLine(ex);
+					//Console.WriteLine("-------------------------");
+				}
+
 			}
 
 			return specs;
@@ -221,161 +254,8 @@ namespace NugetServer.Controllers
 				return string.Join("|", set.Dependencies.Select(d => string.IsNullOrEmpty(d.Version) ? d.Id : $"{d.Id}:[{d.Version}, )"));
 			}
 
-			return string.Join("|", set.Dependencies.Select(d => $"{d.Id}:[{d.Version}, ):{FrameworkNameToMoniker(set.TargetFramework)}"));
+			//return string.Join("|", set.Dependencies.Select(d => $"{d.Id}:[{d.Version}, ):{FrameworkNameToMoniker(set.TargetFramework)}"));
+			return string.Join("|", set.Dependencies.Select(d => $"{d.Id}:{d.Version}:{FrameworkNameToMoniker(set.TargetFramework)}"));
 		}
-	}
-
-	public class IndexResult
-	{
-		public int UpdatedCount { get { return Updated.Length; } }
-
-		public string[] Updated { get; set; }
-
-		public int AddedCount { get { return Added.Length; } }
-
-		public string[] Added { get; set; }
-
-		public int DeletedCount { get { return Deleted.Length; } }
-
-		public string[] Deleted { get; set; }
-	}
-
-	[XmlType("package")]
-	[XmlRoot(Namespace = "http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd", ElementName = "package")]
-	public class Nuspec
-	{
-		[XmlElement("metadata", IsNullable = false)]
-		public NuspecMetadata Metadata { get; set; }
-
-		[XmlArray("files")]
-		public List<NuspecFile> Files { get; set; }
-
-		[XmlIgnore]
-		public long Size { get; set; }
-
-		[XmlIgnore]
-		public string Hash { get; set; }
-
-		[XmlIgnore]
-		public string TargetFrameworks { get; set; }
-	}
-
-	[XmlType("metadata")]
-	public class NuspecMetadata
-	{
-		[XmlAttribute("minClientVersion")]
-		public string MinClientVersion { get; set; }
-
-		[XmlElement("id")]
-		public string Id { get; set; }
-
-		[XmlElement("version")]
-		public string Version { get; set; }
-
-		[XmlElement("title")]
-		public string Title { get; set; }
-
-		[XmlElement("authors")]
-		public string Authors { get; set; }
-
-		[XmlElement("owners")]
-		public string Owners { get; set; }
-
-		[XmlElement("licenseUrl")]
-		public string LicenseUrl { get; set; }
-
-		[XmlElement("projectUrl")]
-		public string ProjectUrl { get; set; }
-
-		[XmlElement("iconUrl")]
-		public string IconUrl { get; set; }
-
-		[XmlElement("requireLicenseAcceptance")]
-		public bool RequireLicenseAcceptance { get; set; }
-
-		[XmlElement("developmentDependency")]
-		public string DevelopmentDependency { get; set; }
-
-		[XmlElement("description")]
-		public string Description { get; set; }
-
-		[XmlElement("summary")]
-		public string Summary { get; set; }
-
-		[XmlElement("releaseNotes")]
-		public string ReleaseNotes { get; set; }
-
-		[XmlElement("copyright")]
-		public string Copyright { get; set; }
-
-		[XmlElement("language")]
-		public string Language { get; set; }
-
-		[XmlElement("tags")]
-		public string Tags { get; set; }
-
-		[XmlArray("dependencies")]
-		[XmlArrayItem("group", typeof(NuspecDependencySet))]
-		[XmlArrayItem("dependency", typeof(NuspecDependency))]
-		public List<object> DependencySerialization { get; set; }
-
-		[XmlIgnore]
-		public IEnumerable<NuspecDependencySet> DependencySets
-		{
-			get
-			{
-				if (DependencySerialization[0] is NuspecDependencySet)
-				{
-					return DependencySerialization.Cast<NuspecDependencySet>();
-				}
-				else if (DependencySerialization[0] is NuspecDependency)
-				{
-					return new List<NuspecDependencySet> { new NuspecDependencySet { Dependencies = DependencySerialization.Cast<NuspecDependency>().ToList() } };
-				}
-				else
-				{
-					throw new InvalidOperationException();
-				}
-			}
-		}
-	}
-
-	[XmlType("file")]
-	public class NuspecFile
-	{
-		[XmlAttribute("src")]
-		public string Source { get; set; }
-
-		[XmlAttribute("target")]
-		public string Target { get; set; }
-
-		[XmlAttribute("exclude")]
-		public string Exclude { get; set; }
-	}
-
-	[XmlType("dependency")]
-	public class NuspecDependency
-	{
-		[XmlAttribute("id")]
-		public string Id { get; set; }
-
-		[XmlAttribute("version")]
-		public string Version { get; set; }
-
-		[XmlAttribute("include")]
-		public string Include { get; set; }
-
-		[XmlAttribute("exclude")]
-		public string Exclude { get; set; }
-	}
-
-	[XmlType("group")]
-	public class NuspecDependencySet
-	{
-		[XmlAttribute("targetFramework")]
-		public string TargetFramework { get; set; }
-
-		[XmlElement("dependency")]
-		public List<NuspecDependency> Dependencies { get; set; }
 	}
 }
